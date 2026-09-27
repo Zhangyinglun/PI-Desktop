@@ -1,5 +1,10 @@
 # Unreleased changes
 
+- GitHub Copilot Claude models answer again. A Copilot account's Anthropic
+  Messages requests now authenticate with `Authorization: Bearer` instead of
+  sending the Copilot token as `X-Api-Key`, which Copilot rejected with
+  "missing required Authorization header".
+
 - Google Gemini rows send requests again. A provider row on the native
   generative-AI endpoint no longer hands pi-ai's Google adapter the internal
   response-capture `fetch` it refuses before the request leaves, custom provider
