@@ -1,0 +1,67 @@
+name: Temporary sidecar build for local verification
+
+# Throwaway probe on a contributor fork. Not part of any pull request.
+# Builds the v0.15.8 sidecar bundle as released, then again with the
+# Copilot Bearer auth fix applied, so the installed app can be verified.
+
+on:
+  push:
+    branches: ['ci/copilot-bearer-sidecar-*']
+
+permissions:
+  contents: read
+
+jobs:
+  sidecar:
+    name: v0.15.8 sidecar bundle, baseline and patched
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build desktop dependencies
+        run: pnpm --filter '@pi-desktop/desktop^...' build
+
+      - name: Bundle baseline sidecar
+        run: |
+          pnpm -C packages/agent-runtime bundle
+          mkdir -p out/baseline
+          cp packages/agent-runtime/dist-bundle/sidecar.js out/baseline/sidecar.js
+
+      - name: Apply the fix from the pull request branch
+        run: |
+          git fetch origin fix/copilot-claude-bearer-auth
+          git checkout FETCH_HEAD -- packages/agent-runtime/src/provider-binding.ts packages/agent-runtime/src/provider-binding.test.ts
+          git status --short
+          git diff --cached --stat
+
+      - name: Provider binding tests on the v0.15.8 tree
+        run: pnpm -C packages/agent-runtime exec vitest run src/provider-binding.test.ts
+
+      - name: Bundle patched sidecar
+        run: |
+          pnpm -C packages/agent-runtime bundle
+          mkdir -p out/patched
+          cp packages/agent-runtime/dist-bundle/sidecar.js out/patched/sidecar.js
+          sha256sum out/baseline/sidecar.js out/patched/sidecar.js | tee out/SHA256SUMS
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sidecar-v0.15.8
+          path: out/
+          retention-days: 7
