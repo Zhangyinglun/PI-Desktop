@@ -1,0 +1,47 @@
+name: Temporary task-candidate E2E
+
+# Throwaway probe on a contributor fork. Not part of any pull request.
+
+on:
+  push:
+    branches: [ci/copilot-bearer-e2e]
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: Task-candidate E2E (test:e2e, test:e2e:subagent-models)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build workspace packages
+        run: pnpm build:js
+
+      - name: Build host-core
+        run: cargo build -p host-core --locked
+
+      - name: Record candidate
+        run: git log --format='%H %s' -3
+
+      - name: test:e2e
+        run: pnpm test:e2e
+
+      - name: test:e2e:subagent-models
+        run: pnpm test:e2e:subagent-models
