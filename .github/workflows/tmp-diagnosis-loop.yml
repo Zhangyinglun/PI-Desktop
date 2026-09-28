@@ -1,0 +1,38 @@
+name: Temporary diagnosis loop
+
+# Throwaway probe on a contributor fork. Not part of any pull request.
+# Runs only the provider-binding tests so a diagnosis loop stays short.
+
+on:
+  push:
+    branches: ['ci/copilot-native-search-loop*']
+
+permissions:
+  contents: read
+
+jobs:
+  loop:
+    name: provider-binding tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build agent-runtime dependencies
+        run: pnpm --filter '@pi-desktop/agent-runtime^...' build
+
+      - name: Record candidate
+        run: git log --format='%H %s' -2
+
+      - name: provider-binding tests
+        run: pnpm -C packages/agent-runtime exec vitest run src/provider-binding.test.ts

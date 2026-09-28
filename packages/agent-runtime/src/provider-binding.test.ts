@@ -1067,6 +1067,122 @@ describe("GitHub Copilot transport identity", () => {
     expect(requests.map((request) => request.headers.get("x-api-key"))).toEqual([null, null]);
     expect(resolveAuth).toHaveBeenCalledTimes(2);
   });
+
+  describe("native web search", () => {
+    const searchModelConfig = (name: string): ModelConfig =>
+      modelConfigWithBinding(
+        {
+          source: "generic",
+          name,
+          baseUrl: "https://api.individual.githubcopilot.com",
+          reasoning: false,
+          input: ["text"],
+          contextWindow: 128_000,
+          maxTokens: 8_192,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        },
+        { contextWindow: 128_000, maxTokens: 8_192, thinkingLevels: ["off"], nativeWebSearch: true },
+      );
+    const hostedSearchTypes = (body: unknown): string[] => {
+      const tools = (body as { tools?: unknown }).tools;
+      return Array.isArray(tools)
+        ? tools
+            .map((tool) => (tool as { type?: unknown }).type)
+            .filter((type): type is string => typeof type === "string" && type.startsWith("web_search"))
+        : [];
+    };
+    const sse = (type: string, data: object) =>
+      `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
+    // Offline stand-in for Copilot's Messages endpoint: it answers the reported
+    // 400 whenever a hosted search tool is attached, and a plain reply otherwise.
+    const copilotMessagesFetch = (bodies: unknown[]) =>
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const body: unknown = JSON.parse(String(init?.body));
+        bodies.push(body);
+        if (hostedSearchTypes(body).length > 0) {
+          return new Response(
+            JSON.stringify({
+              error: { message: "The use of the web search tool is not supported.", code: "unsupported_value" },
+            }),
+            { status: 400, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response(
+          sse("message_start", {
+            message: {
+              id: "msg-copilot", type: "message", role: "assistant", model: "claude-opus-5.5",
+              content: [], stop_reason: null, usage: { input_tokens: 5, output_tokens: 0 },
+            },
+          }) +
+            sse("content_block_start", { index: 0, content_block: { type: "text", text: "" } }) +
+            sse("content_block_delta", { index: 0, delta: { type: "text_delta", text: "answer" } }) +
+            sse("content_block_stop", { index: 0 }) +
+            sse("message_delta", { delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 } }) +
+            sse("message_stop", {}),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      });
+
+    it("does not send Copilot's Messages endpoint a hosted search tool it rejects", async () => {
+      const claudeProvider: RuntimeProviderConfig = {
+        ...provider,
+        modelId: "claude-opus-5.5",
+        apiStyle: "anthropic_messages",
+        modelConfig: searchModelConfig("Claude Opus 5.5"),
+      };
+      const model = buildProviderModel(claudeProvider);
+      const context = {
+        systemPrompt: "system",
+        messages: [{ role: "user" as const, content: "What is today's top headline?", timestamp: Date.now() }],
+        tools: [],
+      };
+      const bodies: unknown[] = [];
+
+      const result = await createProviderModels(claudeProvider, model)
+        .streamSimple(model, context, {
+          fetch: copilotMessagesFetch(bodies),
+          maxRetries: 0,
+          headers: copilotRequestHeaders(claudeProvider, context),
+        })
+        .result();
+
+      expect(result.errorMessage).toBeUndefined();
+      expect(result.stopReason).toBe("stop");
+      expect(bodies.map(hostedSearchTypes)).toEqual([[]]);
+    });
+
+    it("keeps the hosted search tool on a Copilot Responses model", async () => {
+      const gptProvider: RuntimeProviderConfig = {
+        ...provider,
+        modelConfig: searchModelConfig("GPT-4o"),
+      };
+      const model = buildProviderModel(gptProvider);
+      const context = {
+        systemPrompt: "system",
+        messages: [{ role: "user" as const, content: "What is today's top headline?", timestamp: Date.now() }],
+        tools: [],
+      };
+      const bodies: unknown[] = [];
+      const fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return new Response(JSON.stringify({ error: { message: "captured offline" } }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      });
+
+      await createProviderModels(gptProvider, model)
+        .streamSimple(model, context, {
+          fetch,
+          maxRetries: 0,
+          headers: copilotRequestHeaders(gptProvider, context),
+        })
+        .result();
+
+      expect(model.api).toBe("openai-responses");
+      expect(bodies.map(hostedSearchTypes)).toEqual([["web_search"]]);
+    });
+  });
 });
 
 describe("DeepSeek-family relay reasoning replay (#296)", () => {
